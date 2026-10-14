@@ -87,7 +87,8 @@ defmodule Tyrex.Pool do
     runtime_children =
       for i <- 0..(size - 1) do
         Supervisor.child_spec(
-          {Tyrex, Keyword.merge(runtime_opts, name: :"#{name}.Runtime.#{i}")},
+          {Tyrex,
+           Keyword.merge(runtime_opts, name: :"#{name}.Runtime.#{i}", pool: name, index: i)},
           id: {Tyrex, i}
         )
       end
@@ -126,7 +127,11 @@ defmodule Tyrex.Pool do
       :persistent_term.get({__MODULE__, pool_name})
 
     index = mod.select(state, opts)
-    Tyrex.eval(code, Keyword.merge(opts, name: :"#{pool_name}.Runtime.#{index}"))
+
+    Tyrex.eval(
+      code,
+      Keyword.merge(opts, name: :"#{pool_name}.Runtime.#{index}", pool: pool_name, index: index)
+    )
   end
 
   @doc """

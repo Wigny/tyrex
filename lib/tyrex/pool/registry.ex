@@ -31,8 +31,34 @@ defmodule Tyrex.Pool.Registry do
      %{
        name: name,
        strategy_mod: strategy_mod,
-       strategy_state: strategy_state
+       strategy_state: strategy_state,
+       runtimes: %{}
      }}
+  end
+
+  @impl GenServer
+  def handle_cast({:monitor_runtime, index, pid, started_at}, state) do
+    ref = Process.monitor(pid)
+
+    {:noreply, %{state | runtimes: Map.put(state.runtimes, ref, {index, started_at})}}
+  end
+
+  @impl GenServer
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    {{index, started_at}, runtimes} = Map.pop!(state.runtimes, ref)
+
+    :telemetry.execute(
+      [:tyrex, :runtime, :stop],
+      %{duration: System.monotonic_time() - started_at},
+      %{
+        runtime: :"#{state.name}.Runtime.#{index}",
+        pool: state.name,
+        index: index,
+        reason: reason
+      }
+    )
+
+    {:noreply, %{state | runtimes: runtimes}}
   end
 
   @impl GenServer

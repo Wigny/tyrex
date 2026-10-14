@@ -95,6 +95,7 @@ defmodule Tyrex.MixProject do
       {:jason, "~> 1.4"},
       {:rustler, "~> 0.38.0", optional: true},
       {:rustler_precompiled, "~> 0.7"},
+      {:telemetry, "~> 1.4.2"},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:benchee, "~> 1.3", only: :dev, runtime: false}
     ]

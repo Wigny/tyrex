@@ -95,7 +95,15 @@ defmodule Tyrex do
   @min_heap_mb 32
   @measured_min_heap_mb 14
 
-  @runtime_opts [:main_module_path, :permissions, :startup_timeout, :apply, :max_heap_mb]
+  @runtime_opts [
+    :main_module_path,
+    :permissions,
+    :startup_timeout,
+    :apply,
+    :max_heap_mb,
+    :pool,
+    :index
+  ]
 
   @permission_keys [
     :allow_all,
@@ -465,6 +473,26 @@ defmodule Tyrex do
   """
   @spec eval(binary(), Keyword.t()) :: {:ok, term()} | {:error, Error.t()}
   def eval(code, opts) do
+    metadata = %{
+      runtime: server(opts),
+      pool: Keyword.get(opts, :pool),
+      index: Keyword.get(opts, :index),
+      blocking: Keyword.get(opts, :blocking, false)
+    }
+
+    :telemetry.span([:tyrex, :eval], metadata, fn ->
+      result = call_runtime(code, opts)
+
+      {result, eval_stop_metadata(metadata, result)}
+    end)
+  end
+
+  defp a(metadata, {:ok, _value}), do: Map.put(metadata, :result, :ok)
+
+  defp eval_stop_metadata(metadata, {:error, %Error{name: name}}),
+    do: Map.put(metadata, :result, name)
+
+  defp call_runtime(code, opts) do
     case validate_timeout!(Keyword.get(opts, :timeout, @default_eval_timeout)) do
       :infinity ->
         {:error, unsupported_option(:without_deadline)}
@@ -517,6 +545,7 @@ defmodule Tyrex do
 
   @impl GenServer
   def init(opts) do
+    start_time = System.monotonic_time()
     pid = self()
     startup_timeout = Keyword.fetch!(opts, :startup_timeout)
     allowlist = Keyword.fetch!(opts, :apply_allowlist)
@@ -548,7 +577,21 @@ defmodule Tyrex do
     # otherwise `Task.await` would race the inner `after` clause.
     case Task.await(task, startup_timeout + 1_000) do
       {:ok, reference} ->
-        {:ok, %Runtime{reference: reference, apply_allowlist: allowlist}}
+        state = %Runtime{
+          reference: reference,
+          apply_allowlist: allowlist,
+          pool: Keyword.fetch!(opts, :pool),
+          index: Keyword.fetch!(opts, :index),
+          started_at: System.monotonic_time()
+        }
+
+        :telemetry.execute(
+          [:tyrex, :runtime, :start],
+          %{system_time: System.system_time(), duration: state.started_at - start_time},
+          runtime_metadata(state)
+        )
+
+        {:ok, state}
 
       {:error, error} ->
         {:stop, error}
@@ -683,7 +726,15 @@ defmodule Tyrex do
   end
 
   @impl GenServer
-  def terminate(_reason, state) do
+  def terminate(reason, state) do
+    if state.pool == nil do
+      :telemetry.execute(
+        [:tyrex, :runtime, :stop],
+        %{duration: System.monotonic_time() - state.started_at},
+        Map.put(runtime_metadata(state), :reason, reason)
+      )
+    end
+
     # `{:stop, ...}` from a handler runs terminate/2, so this one call also
     # covers `blocking_eval/3`'s three stop returns and a plain `Tyrex.stop/1` —
     # both of which used to leave pending non-blocking callers to exit instead
@@ -719,6 +770,16 @@ defmodule Tyrex do
 
   defp server(opts) do
     Keyword.get(opts, :pid) || Keyword.get(opts, :name, __MODULE__)
+  end
+
+  defp runtime_metadata(state) do
+    runtime =
+      case Process.info(self(), :registered_name) do
+        {:registered_name, name} -> name
+        _unregistered -> self()
+      end
+
+    %{runtime: runtime, pool: state.pool, index: state.index}
   end
 
   defp call_timeout(timeout), do: timeout + @deadline_grace_ms
@@ -920,7 +981,9 @@ defmodule Tyrex do
       permissions_json: encode_permissions(resolve_permissions(opts)),
       apply_allowlist: build_apply_allowlist(Keyword.get(opts, :apply, false)),
       max_heap_mb: validate_max_heap_mb!(Keyword.get(opts, :max_heap_mb)),
-      startup_timeout: Keyword.get(opts, :startup_timeout, @default_startup_timeout)
+      startup_timeout: Keyword.get(opts, :startup_timeout, @default_startup_timeout),
+      pool: Keyword.get(opts, :pool),
+      index: Keyword.get(opts, :index)
     ]
   end
 
