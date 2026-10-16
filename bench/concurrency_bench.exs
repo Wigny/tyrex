@@ -37,4 +37,4 @@ Benchee.run(
 )
 
 Tyrex.stop(pid: single)
-Supervisor.stop(:"conc_pool.Supervisor")
+Supervisor.stop(:conc_pool)

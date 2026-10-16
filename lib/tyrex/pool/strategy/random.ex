@@ -8,16 +8,14 @@ defmodule Tyrex.Pool.Strategy.Random do
 
   @behaviour Tyrex.Pool.Strategy
 
-  @impl true
-  def init(_pool_name, size) do
-    size
-  end
-
   @doc """
-  Selects a uniformly random runtime index in 0..size-1.
+  Routes on a fresh random float.
+
+  The key is drawn from a large space, not from `1..size`, so the spread does not depend on
+  which partition `PartitionSupervisor` maps a given key to.
   """
   @impl true
-  def select(size, _opts) do
-    :rand.uniform(size) - 1
+  def select(_pool_name, _size, _opts) do
+    :rand.uniform()
   end
 end

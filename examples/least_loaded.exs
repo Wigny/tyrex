@@ -9,35 +9,26 @@ defmodule LeastLoaded do
   @moduledoc """
   Picks the `Tyrex` runtime with the smallest mailbox.
 
-  State shape: `{pool_name :: atom(), size :: pos_integer()}`.
-  No ETS, no GenServer — just `Process.info/2` on each runtime per select.
-  Fine for small pools; consider caching for larger ones.
+  No ETS, no GenServer — just `Process.info/2` on each runtime per select. Fine for small
+  pools; consider sampling two runtimes instead of all of them for larger ones.
+
+  A restarting runtime resolves to `nil` and counts as saturated, so a restart does not fail
+  the call.
   """
 
   @behaviour Tyrex.Pool.Strategy
 
   @impl true
-  def init(pool_name, size), do: {pool_name, size}
+  def select(pool_name, size, _opts) do
+    Enum.min_by(1..size, fn key ->
+      pid = GenServer.whereis({:via, PartitionSupervisor, {pool_name, key}})
 
-  @impl true
-  def select({pool_name, size}, _opts) do
-    Enum.min_by(0..(size - 1), fn i ->
-      case Process.whereis(:"#{pool_name}.Runtime.#{i}") do
-        nil ->
-          # Runtime currently down — pretend it's saturated so we skip it.
-          :infinity
-
-        pid ->
-          case Process.info(pid, :message_queue_len) do
-            {:message_queue_len, len} -> len
-            nil -> :infinity
-          end
+      case Process.info(pid, :message_queue_len) do
+        {:message_queue_len, length} -> length
+        nil -> :infinity
       end
     end)
   end
-
-  @impl true
-  def terminate(_state), do: :ok
 end
 
 IO.puts("=== Tyrex Least-Loaded Pool Strategy ===\n")
@@ -46,13 +37,17 @@ size = 4
 {:ok, _} = Tyrex.Pool.start_link(name: :ll_pool, size: size, permissions: :none, strategy: LeastLoaded)
 
 # Tag each runtime so we can attribute calls to it after the fact.
-# Init via the named runtime (NOT the pool) so every runtime gets initialized —
-# the LeastLoaded strategy would route all four init calls to runtime 0 since
+# Init via the runtime's pid (NOT the pool) so every runtime gets initialized —
+# the LeastLoaded strategy would route all four init calls to one runtime since
 # it's always the least-loaded when nothing's queued.
-for i <- 0..(size - 1) do
-  Tyrex.eval("globalThis.runtimeId = #{i}; globalThis.calls = 0",
-    name: :"ll_pool.Runtime.#{i}"
-  )
+runtimes =
+  :ll_pool
+  |> PartitionSupervisor.which_children()
+  |> Enum.map(fn {partition, pid, _type, _modules} -> {partition, pid} end)
+  |> Enum.sort()
+
+for {partition, pid} <- runtimes do
+  Tyrex.eval("globalThis.runtimeId = #{partition}; globalThis.calls = 0", pid: pid)
 end
 
 # Mixed workload: 1/3 "expensive" (a JS setTimeout), 2/3 cheap math.
@@ -109,11 +104,11 @@ end
 # Cross-check via JS-side counter — should match the totals above.
 IO.puts("\nJS-side `globalThis.calls` per runtime:")
 
-for i <- 0..(size - 1) do
-  {:ok, calls} = Tyrex.eval("globalThis.calls", name: :"ll_pool.Runtime.#{i}")
-  IO.puts("  runtime #{i}: calls=#{calls}")
+for {partition, pid} <- runtimes do
+  {:ok, calls} = Tyrex.eval("globalThis.calls", pid: pid)
+  IO.puts("  runtime #{partition}: calls=#{calls}")
 end
 
-Supervisor.stop(:"ll_pool.Supervisor")
+Supervisor.stop(:ll_pool)
 
 IO.puts("\n=== Done! ===")

@@ -82,7 +82,6 @@ defmodule Tyrex.MixProject do
         "Inline JS": [Tyrex.Sigil, Tyrex.Inline],
         Pool: [Tyrex.Pool, Tyrex.Pool.Strategy],
         Strategies: [
-          Tyrex.Pool.Strategy.RoundRobin,
           Tyrex.Pool.Strategy.Random,
           Tyrex.Pool.Strategy.Hash
         ]

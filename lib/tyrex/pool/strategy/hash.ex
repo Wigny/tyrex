@@ -12,24 +12,12 @@ defmodule Tyrex.Pool.Strategy.Hash do
 
   @behaviour Tyrex.Pool.Strategy
 
-  @impl true
-  def init(_pool_name, size) do
-    size
-  end
-
   @doc """
-  Selects a runtime index in 0..size-1 deterministically from `opts[:key]`
-  using `:erlang.phash2/2`. Falls back to a random index when no `:key` is
-  provided.
+  Routes on `opts[:key]`, which `PartitionSupervisor` hashes to one runtime. Falls back to a
+  random key when no `:key` is provided.
   """
   @impl true
-  def select(size, opts) do
-    case Keyword.fetch(opts, :key) do
-      {:ok, key} ->
-        :erlang.phash2(key, size)
-
-      :error ->
-        :rand.uniform(size) - 1
-    end
+  def select(_pool_name, _size, opts) do
+    Keyword.get_lazy(opts, :key, fn -> :rand.uniform() end)
   end
 end

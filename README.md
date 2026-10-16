@@ -606,26 +606,18 @@ children = [
   {Tyrex.Pool, name: :js_pool, size: 4}
 ]
 
-# Evaluate — distributed via round-robin by default
+# Evaluate — distributed at random by default
 {:ok, result} = Tyrex.Pool.eval(:js_pool, "1 + 1")
 ```
 
-`Tyrex.Pool` cleans up its `:persistent_term` entry and any
-strategy-owned ETS tables on supervisor shutdown, so it is safe to start and
-stop pools dynamically (e.g. one pool per tenant) without leaking VM state.
+A pool is a `PartitionSupervisor` whose partitions are the runtimes, so stopping it takes the runtimes and the routing table with it. Pools can be started and stopped dynamically (e.g. one pool per tenant).
 
 ### Strategies
 
-**Round-Robin** (default) — cycles sequentially, lock-free via ETS atomic counters:
+**Random** (default) — picks a random runtime, good for bursty workloads:
 
 ```elixir
 {Tyrex.Pool, name: :pool, size: 4}
-```
-
-**Random** — picks a random runtime, good for bursty workloads:
-
-```elixir
-{Tyrex.Pool, name: :pool, size: 4, strategy: Tyrex.Pool.Strategy.Random}
 ```
 
 **Hash** — same key always hits the same runtime, for stateful JS sessions:
@@ -643,15 +635,14 @@ Tyrex.Pool.eval(:pool, "getCart()", key: user_id)
 defmodule MyApp.LeastLoaded do
   @behaviour Tyrex.Pool.Strategy
 
-  def init(pool_name, size), do: {pool_name, size}
+  def select(pool_name, size, _opts) do
+    Enum.min_by(1..size, fn key ->
+      pid = GenServer.whereis({:via, PartitionSupervisor, {pool_name, key}})
 
-  def select({pool_name, size}, _opts) do
-    0..(size - 1)
-    |> Enum.min_by(fn i ->
-      :"#{pool_name}.Runtime.#{i}"
-      |> Process.whereis()
-      |> Process.info(:message_queue_len)
-      |> elem(1)
+      case Process.info(pid, :message_queue_len) do
+        {:message_queue_len, length} -> length
+        nil -> :infinity
+      end
     end)
   end
 end

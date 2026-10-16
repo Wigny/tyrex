@@ -1,91 +1,34 @@
 defmodule TyrexStrategyTest do
   use ExUnit.Case, async: true
 
-  describe "RoundRobin strategy" do
-    test "cycles through indices starting at 0" do
-      state = Tyrex.Pool.Strategy.RoundRobin.init(:test_rr, 3)
-
-      # First select returns 0 (previously was 1 — fixed in 0.3.0).
-      assert Tyrex.Pool.Strategy.RoundRobin.select(state, []) == 0
-      assert Tyrex.Pool.Strategy.RoundRobin.select(state, []) == 1
-      assert Tyrex.Pool.Strategy.RoundRobin.select(state, []) == 2
-      assert Tyrex.Pool.Strategy.RoundRobin.select(state, []) == 0
-
-      assert :ok = Tyrex.Pool.Strategy.RoundRobin.terminate(state)
-    end
-
-    test "hits every index exactly once in size consecutive selects" do
-      state = Tyrex.Pool.Strategy.RoundRobin.init(:test_rr_full, 4)
-
-      indices = for _ <- 1..4, do: Tyrex.Pool.Strategy.RoundRobin.select(state, [])
-      assert indices == [0, 1, 2, 3]
-
-      Tyrex.Pool.Strategy.RoundRobin.terminate(state)
-    end
-
-    test "wraps back to 0 after size-1" do
-      state = Tyrex.Pool.Strategy.RoundRobin.init(:test_rr_wrap, 3)
-
-      indices = for _ <- 1..5, do: Tyrex.Pool.Strategy.RoundRobin.select(state, [])
-      assert indices == [0, 1, 2, 0, 1]
-
-      Tyrex.Pool.Strategy.RoundRobin.terminate(state)
-    end
-
-    test "handles single pool size" do
-      state = Tyrex.Pool.Strategy.RoundRobin.init(:test_rr_single, 1)
-
-      for _ <- 1..5 do
-        assert Tyrex.Pool.Strategy.RoundRobin.select(state, []) == 0
-      end
-
-      Tyrex.Pool.Strategy.RoundRobin.terminate(state)
-    end
-  end
-
+  # A strategy returns a routing key, never a runtime index. `PartitionSupervisor` owns the
+  # mapping from key to partition and documents that it may change, so a strategy may rely on
+  # the same key reaching the same runtime and on nothing else. An integer key routes through
+  # `rem(abs(key), size)`, which is why a key meant to spread must not be one.
   describe "Random strategy" do
-    test "returns values within range" do
-      state = Tyrex.Pool.Strategy.Random.init(:test_rand, 4)
+    test "returns a different key on every call" do
+      keys = for _ <- 1..100, do: Tyrex.Pool.Strategy.Random.select(:test_pool, 4, [])
 
-      results =
-        for _ <- 1..100 do
-          Tyrex.Pool.Strategy.Random.select(state, [])
-        end
+      assert keys |> Enum.uniq() |> length() == 100
+    end
 
-      assert Enum.all?(results, &(&1 >= 0 and &1 < 4))
-      # With 100 samples and 4 buckets, all should appear
-      assert Enum.sort(Enum.uniq(results)) == [0, 1, 2, 3]
+    test "returns a non-integer key so the routing hashes it" do
+      keys = for _ <- 1..100, do: Tyrex.Pool.Strategy.Random.select(:test_pool, 4, [])
+
+      refute Enum.any?(keys, &is_integer/1)
     end
   end
 
   describe "Hash strategy" do
-    test "same key gives same index" do
-      state = Tyrex.Pool.Strategy.Hash.init(:test_hash, 4)
-
-      for _ <- 1..20 do
-        idx = Tyrex.Pool.Strategy.Hash.select(state, key: "user_abc")
-        assert idx == Tyrex.Pool.Strategy.Hash.select(state, key: "user_abc")
-        assert idx >= 0 and idx < 4
-      end
+    test "returns the given key unchanged" do
+      assert Tyrex.Pool.Strategy.Hash.select(:test_pool, 4, key: "user_abc") == "user_abc"
     end
 
-    test "different keys distribute" do
-      state = Tyrex.Pool.Strategy.Hash.init(:test_hash2, 8)
+    test "returns a different non-integer key when no key is given" do
+      keys = for _ <- 1..100, do: Tyrex.Pool.Strategy.Hash.select(:test_pool, 4, [])
 
-      indices =
-        for i <- 1..100 do
-          Tyrex.Pool.Strategy.Hash.select(state, key: "key_#{i}")
-        end
-
-      # With 100 keys and 8 buckets, should hit most buckets
-      unique = Enum.uniq(indices)
-      assert length(unique) >= 4
-    end
-
-    test "missing key falls back to random" do
-      state = Tyrex.Pool.Strategy.Hash.init(:test_hash3, 4)
-      idx = Tyrex.Pool.Strategy.Hash.select(state, [])
-      assert idx >= 0 and idx < 4
+      assert keys |> Enum.uniq() |> length() == 100
+      refute Enum.any?(keys, &is_integer/1)
     end
   end
 end

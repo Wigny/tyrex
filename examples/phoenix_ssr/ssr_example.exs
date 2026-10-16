@@ -51,5 +51,5 @@ IO.puts("Template HTML:\n#{html}\n")
 
 IO.puts("Markdown HTML:\n#{html}\n")
 
-Supervisor.stop(:"ssr_pool.Supervisor")
+Supervisor.stop(:ssr_pool)
 IO.puts("=== Done! ===")

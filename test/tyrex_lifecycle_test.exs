@@ -321,15 +321,15 @@ defmodule TyrexLifecycleTest do
 
       assert {:ok, 1} = Tyrex.Pool.eval(:recovery_pool, "1")
 
-      victim = Process.whereis(:"recovery_pool.Runtime.0")
+      victim = GenServer.whereis({:via, PartitionSupervisor, {:recovery_pool, 0}})
       assert is_pid(victim)
 
       ref = Process.monitor(victim)
       :ok = Tyrex.kill(pid: victim)
       assert_receive {:DOWN, ^ref, :process, ^victim, _}, 5_000
 
-      # `Tyrex.Pool.RuntimeSupervisor` rebuilds the killed child in place. That
-      # layer is :one_for_one since 27bb9df, so the sibling is never torn down
+      # The pool's `PartitionSupervisor` rebuilds the killed child in place. It
+      # is :one_for_one, so the sibling is never torn down
       # and keeps answering throughout; only a call the strategy routes at the
       # dead name during the restart window is affected. Since task 2.4 of the
       # previous plan those no longer exit either — `Tyrex.eval/2`'s
@@ -349,10 +349,10 @@ defmodule TyrexLifecycleTest do
              end)
 
       # Both runtimes are back.
-      assert is_pid(Process.whereis(:"recovery_pool.Runtime.0"))
-      assert is_pid(Process.whereis(:"recovery_pool.Runtime.1"))
+      assert is_pid(GenServer.whereis({:via, PartitionSupervisor, {:recovery_pool, 0}}))
+      assert is_pid(GenServer.whereis({:via, PartitionSupervisor, {:recovery_pool, 1}}))
 
-      Supervisor.stop(:"recovery_pool.Supervisor")
+      Supervisor.stop(:recovery_pool)
     end
   end
 

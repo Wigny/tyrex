@@ -2,7 +2,7 @@ defmodule Tyrex.Pool do
   @moduledoc """
   A pool of Deno runtimes with pluggable dispatch strategies.
 
-  `Tyrex.Pool` is a `Supervisor` that starts multiple `Tyrex` GenServer children
+  `Tyrex.Pool` is a `PartitionSupervisor` that starts multiple `Tyrex` GenServer children
   and distributes `eval` calls across them using a configurable strategy.
 
   ## Usage
@@ -17,23 +17,28 @@ defmodule Tyrex.Pool do
 
   ## Strategies
 
-    * `Tyrex.Pool.Strategy.RoundRobin` (default) — cycles through runtimes sequentially
-    * `Tyrex.Pool.Strategy.Random` — picks a random runtime
+    * `Tyrex.Pool.Strategy.Random` (default) — picks a random runtime
     * `Tyrex.Pool.Strategy.Hash` — routes by `:key` option for sticky sessions
 
   See `Tyrex.Pool.Strategy` for implementing custom strategies.
 
   ## Lifecycle
 
-  The pool registers its metadata in `:persistent_term` and may own ETS tables
-  via its strategy. Both are cleaned up automatically when the supervisor is
-  stopped — `Tyrex.Pool` is safe to start and stop dynamically (e.g. one pool
-  per tenant) without leaking persistent_term or ETS resources.
+  The runtimes are unregistered and are addressed through the `PartitionSupervisor`, which keeps
+  its routing table under the pool's name. Stopping the pool takes the processes and that table
+  with it, so pools can be started and stopped dynamically — one per tenant, for example.
   """
 
-  use Supervisor
-
   alias Tyrex.Error
+
+  @doc false
+  def child_spec(opts) do
+    %{
+      id: Keyword.fetch!(opts, :name),
+      start: {__MODULE__, :start_link, [opts]},
+      type: :supervisor
+    }
+  end
 
   @doc """
   Start a pool of Tyrex runtimes.
@@ -42,7 +47,7 @@ defmodule Tyrex.Pool do
 
     * `:name` - Required. The name of the pool.
     * `:size` - Number of runtimes. Defaults to `System.schedulers_online()`.
-    * `:strategy` - Dispatch strategy module. Defaults to `Tyrex.Pool.Strategy.RoundRobin`.
+    * `:strategy` - Dispatch strategy module. Defaults to `Tyrex.Pool.Strategy.Random`.
     * `:main_module_path` - Path to the main JS module for all runtimes.
     * `:permissions` - Runtime permissions. See `Tyrex.start/1` for details.
     * `:apply` - Elixir bridge allowlist. See `Tyrex.start/1` for details.
@@ -58,57 +63,21 @@ defmodule Tyrex.Pool do
   @spec start_link(Keyword.t()) :: Supervisor.on_start()
   def start_link(opts) do
     name = Keyword.fetch!(opts, :name)
-    Supervisor.start_link(__MODULE__, opts, name: :"#{name}.Supervisor")
-  end
-
-  @impl Supervisor
-  def init(opts) do
-    name = Keyword.fetch!(opts, :name)
     size = Keyword.get(opts, :size, System.schedulers_online())
-    strategy_mod = Keyword.get(opts, :strategy, Tyrex.Pool.Strategy.RoundRobin)
+    strategy_mod = Keyword.get(opts, :strategy, Tyrex.Pool.Strategy.Random)
 
     runtime_opts =
       Keyword.take(opts, [:main_module_path, :permissions, :startup_timeout, :apply, :max_heap_mb])
 
-    strategy_state = strategy_mod.init(name, size)
+    :persistent_term.put({__MODULE__, name}, strategy_mod)
 
-    registry_child =
-      Supervisor.child_spec(
-        {Tyrex.Pool.Registry,
-         %{
-           name: name,
-           size: size,
-           strategy_mod: strategy_mod,
-           strategy_state: strategy_state
-         }},
-        id: Tyrex.Pool.Registry
-      )
-
-    runtime_children =
-      for i <- 0..(size - 1) do
-        Supervisor.child_spec(
-          {Tyrex, Keyword.merge(runtime_opts, name: :"#{name}.Runtime.#{i}")},
-          id: {Tyrex, i}
-        )
-      end
-
-    runtime_supervisor =
-      Supervisor.child_spec(
-        {Tyrex.Pool.RuntimeSupervisor,
-         [children: runtime_children, size: size] ++
-           Keyword.take(opts, [:max_restarts, :max_seconds])},
-        id: Tyrex.Pool.RuntimeSupervisor
-      )
-
-    # Registry is the FIRST child so it terminates LAST — its terminate/2 then
-    # gets to erase the persistent_term entry after all runtimes have stopped.
-    # `:rest_for_one` ensures a Registry crash takes down the runtimes so the
-    # supervisor rebuilds them with a fresh persistent_term entry.
-    #
-    # The runtimes themselves sit one level down, `:one_for_one`, so that a
-    # single guest's deadline or heap trip does not restart its siblings. See
-    # `Tyrex.Pool.RuntimeSupervisor` for why that mattered enough to add a layer.
-    Supervisor.init([registry_child, runtime_supervisor], strategy: :rest_for_one)
+    PartitionSupervisor.start_link(
+      name: name,
+      partitions: size,
+      child_spec: {Tyrex, [name: nil] ++ runtime_opts},
+      max_restarts: Keyword.get(opts, :max_restarts, max(size * 4, 12)),
+      max_seconds: Keyword.get(opts, :max_seconds, 5)
+    )
   end
 
   @doc """
@@ -122,11 +91,11 @@ defmodule Tyrex.Pool do
   """
   @spec eval(atom(), binary(), Keyword.t()) :: {:ok, term()} | {:error, Tyrex.Error.t()}
   def eval(pool_name, code, opts \\ []) do
-    %{strategy_mod: mod, strategy_state: state} =
-      :persistent_term.get({__MODULE__, pool_name})
+    strategy_mod = :persistent_term.get({__MODULE__, pool_name})
+    size = PartitionSupervisor.partitions(pool_name)
 
-    index = mod.select(state, opts)
-    Tyrex.eval(code, Keyword.merge(opts, name: :"#{pool_name}.Runtime.#{index}"))
+    key = strategy_mod.select(pool_name, size, opts)
+    Tyrex.eval(code, Keyword.put(opts, :name, {:via, PartitionSupervisor, {pool_name, key}}))
   end
 
   @doc """

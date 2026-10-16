@@ -9,28 +9,32 @@ defmodule Tyrex.Pool.Strategy do
       defmodule MyApp.LeastLoaded do
         @behaviour Tyrex.Pool.Strategy
 
-        def init(pool_name, size), do: {pool_name, size}
+        def select(pool_name, size, _opts) do
+          Enum.min_by(1..size, fn key ->
+            pid = GenServer.whereis({:via, PartitionSupervisor, {pool_name, key}})
 
-        def select({pool_name, size}, _opts) do
-          0..(size - 1)
-          |> Enum.min_by(fn i ->
-            :\"\#{pool_name}.Runtime.\#{i}\"
-            |> Process.whereis()
-            |> Process.info(:message_queue_len)
-            |> elem(1)
+            case Process.info(pid, :message_queue_len) do
+              {:message_queue_len, length} -> length
+              nil -> :infinity
+            end
           end)
         end
       end
   """
 
-  @doc "Initialize strategy state. Called once at pool startup. Returns opaque state."
-  @callback init(pool_name :: atom(), size :: pos_integer()) :: state :: term()
+  @doc """
+  Return the routing key of the runtime to use.
 
-  @doc "Select a runtime index (0..size-1). Receives state and optional dispatch key."
-  @callback select(state :: term(), opts :: keyword()) :: non_neg_integer()
+  `PartitionSupervisor` routes an integer key with `rem(abs(key), size)` and any other term with
+  `:erlang.phash2(key, size)`, and documents that both rules may change. A strategy therefore
+  returns a key and never a runtime index: the same key always reaches the same runtime, which
+  runtime it is is not part of the contract.
 
-  @doc "Clean up strategy state on pool shutdown."
-  @callback terminate(state :: term()) :: :ok
+  `opts` are the options of the `Tyrex.Pool.eval/3` call being dispatched, so a strategy can
+  route on `:key`, on the runtimes themselves, or on anything else the caller passes.
 
-  @optional_callbacks [terminate: 1]
+  A strategy keeps no state of its own: the pool is a `PartitionSupervisor`, which has nowhere to
+  hold it, and a counter would need a process to own it.
+  """
+  @callback select(pool_name :: atom(), size :: pos_integer(), opts :: keyword()) :: term()
 end

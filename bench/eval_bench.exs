@@ -26,7 +26,7 @@ Benchee.run(
     "eval: blocking string ops" => fn ->
       {:ok, _} = Tyrex.eval("'hello world'.toUpperCase()", pid: pid, blocking: true)
     end,
-    "pool: round-robin eval" => fn ->
+    "pool: eval" => fn ->
       {:ok, _} = Tyrex.Pool.eval(:bench_pool, "1 + 2")
     end
   },
@@ -37,4 +37,4 @@ Benchee.run(
 )
 
 Tyrex.stop(pid: pid)
-Supervisor.stop(:"bench_pool.Supervisor")
+Supervisor.stop(:bench_pool)

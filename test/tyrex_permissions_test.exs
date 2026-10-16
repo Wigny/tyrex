@@ -809,7 +809,7 @@ defmodule TyrexPermissionsTest do
       assert message =~ "NotCapable"
       assert message =~ "--allow-env"
 
-      Supervisor.stop(:"perm_pool.Supervisor")
+      Supervisor.stop(:perm_pool)
     end
   end
 

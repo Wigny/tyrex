@@ -22,7 +22,7 @@ end
 
 IO.puts("")
 
-Supervisor.stop(:"my_pool.Supervisor")
+Supervisor.stop(:my_pool)
 
 # Hash strategy - sticky sessions
 {:ok, _} =
@@ -43,7 +43,7 @@ end
 {:ok, visits} = Tyrex.Pool.eval(:sticky_pool, "globalThis.visits", key: "user_abc")
 IO.puts("\nSticky session - user_abc visited #{visits} times")
 
-Supervisor.stop(:"sticky_pool.Supervisor")
+Supervisor.stop(:sticky_pool)
 
 # Concurrent pool usage
 {:ok, _} = Tyrex.Pool.start_link(name: :conc_pool, size: 4, permissions: :none)
@@ -59,6 +59,6 @@ tasks =
 results = Task.await_many(tasks)
 IO.puts("\nConcurrent squares: #{inspect(Enum.sort(results))}")
 
-Supervisor.stop(:"conc_pool.Supervisor")
+Supervisor.stop(:conc_pool)
 
 IO.puts("\n=== Done! ===")
