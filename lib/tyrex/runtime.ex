@@ -24,14 +24,26 @@ defmodule Tyrex.Runtime do
 
   @typedoc """
   Tyrex runtime state: the opaque NIF resource reference, the resolved
-  `Tyrex.apply` allowlist (`nil` when the bridge is disabled), and the map of
-  in-flight `eval` callers to their deadline timers.
+  `Tyrex.apply` allowlist (`nil` when the bridge is disabled), the map of
+  in-flight `eval` callers to their deadline timers, and, for its telemetry
+  events, the `Tyrex.Pool` name and index of the runtime (`nil` outside a pool)
+  and the monotonic time at which it started.
   """
   @type t :: %__MODULE__{
           reference: reference(),
           apply_allowlist: allowlist(),
-          inflight: %{GenServer.from() => reference()}
+          inflight: %{GenServer.from() => reference()},
+          pool: atom() | nil,
+          index: non_neg_integer() | nil,
+          started_at: integer() | nil
         }
 
-  defstruct [:reference, apply_allowlist: nil, inflight: %{}]
+  defstruct [
+    :reference,
+    apply_allowlist: nil,
+    inflight: %{},
+    pool: nil,
+    index: nil,
+    started_at: nil
+  ]
 end
