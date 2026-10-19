@@ -611,12 +611,12 @@ children = [
 ```
 
 `Tyrex.Pool` cleans up its `:persistent_term` entry and any
-strategy-owned ETS tables on supervisor shutdown, so it is safe to start and
+strategy-owned state on supervisor shutdown, so it is safe to start and
 stop pools dynamically (e.g. one pool per tenant) without leaking VM state.
 
 ### Strategies
 
-**Round-Robin** (default) — cycles sequentially, lock-free via ETS atomic counters:
+**Round-Robin** (default) — cycles sequentially, lock-free via an `:atomics` counter:
 
 ```elixir
 {Tyrex.Pool, name: :pool, size: 4}
@@ -648,8 +648,9 @@ defmodule MyApp.LeastLoaded do
   def select({pool_name, size}, _opts) do
     0..(size - 1)
     |> Enum.min_by(fn i ->
-      :"#{pool_name}.Runtime.#{i}"
-      |> Process.whereis()
+      pool_name
+      |> Tyrex.Pool.runtime_name(i)
+      |> GenServer.whereis()
       |> Process.info(:message_queue_len)
       |> elem(1)
     end)
@@ -712,6 +713,7 @@ Run any example with `TYREX_BUILD=true mix run examples/<file>`:
 | `Tyrex.Pool.start_link/1` | Start a pool supervisor |
 | `Tyrex.Pool.eval/2,3` | Evaluate on a pool-selected runtime |
 | `Tyrex.Pool.eval!/2,3` | Same as `eval`, raises `Tyrex.Error` on error |
+| `Tyrex.Pool.runtime_name/2` | Name of the runtime at an index, for `Tyrex.eval/2` or `GenServer.whereis/1` |
 
 ### Runtime Options (`Tyrex.start/1`, `Tyrex.start_link/1`)
 
@@ -721,7 +723,7 @@ Run any example with `TYREX_BUILD=true mix run examples/<file>`:
 | `:apply` | `false` | `false`, or a list of `{Module, :function, arity}` tuples callable from JS |
 | `:max_heap_mb` | unset | Cap the V8 heap, in MB (minimum 32) |
 | `:main_module_path` | unset | ES module loaded at startup |
-| `:name` | unset | Register the runtime under a name |
+| `:name` | `Tyrex` | Register the runtime under a name (`start_link/1` only) |
 
 `Tyrex.Pool` accepts `:permissions`, `:apply`, `:max_heap_mb`,
 `:startup_timeout` and `:main_module_path` and forwards them to every runtime it

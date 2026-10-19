@@ -321,7 +321,7 @@ defmodule TyrexLifecycleTest do
 
       assert {:ok, 1} = Tyrex.Pool.eval(:recovery_pool, "1")
 
-      victim = Process.whereis(:"recovery_pool.Runtime.0")
+      victim = GenServer.whereis(Tyrex.Pool.runtime_name(:recovery_pool, 0))
       assert is_pid(victim)
 
       ref = Process.monitor(victim)
@@ -349,8 +349,11 @@ defmodule TyrexLifecycleTest do
              end)
 
       # Both runtimes are back.
-      assert is_pid(Process.whereis(:"recovery_pool.Runtime.0"))
-      assert is_pid(Process.whereis(:"recovery_pool.Runtime.1"))
+      assert eventually(fn ->
+               GenServer.whereis(Tyrex.Pool.runtime_name(:recovery_pool, 0)) not in [nil, victim]
+             end)
+
+      assert Process.alive?(GenServer.whereis(Tyrex.Pool.runtime_name(:recovery_pool, 1)))
 
       Supervisor.stop(:"recovery_pool.Supervisor")
     end

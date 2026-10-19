@@ -14,8 +14,9 @@ defmodule Tyrex.Pool.Strategy do
         def select({pool_name, size}, _opts) do
           0..(size - 1)
           |> Enum.min_by(fn i ->
-            :\"\#{pool_name}.Runtime.\#{i}\"
-            |> Process.whereis()
+            pool_name
+            |> Tyrex.Pool.runtime_name(i)
+            |> GenServer.whereis()
             |> Process.info(:message_queue_len)
             |> elem(1)
           end)

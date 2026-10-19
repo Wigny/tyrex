@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+**Breaking: pool runtimes are no longer registered as `:"<pool>.Runtime.<i>"`.** They now run under a `PartitionSupervisor` named `:"<pool>.Runtimes"`; address runtime `i` with the new `Tyrex.Pool.runtime_name(pool, i)`. Code that passes `name: :"<pool>.Runtime.<i>"` to `Tyrex.eval/2` gets `:dead_runtime_error`, and a custom strategy that looks runtimes up with `Process.whereis/1` gets `nil`. An index returned by `select/2` outside `0..size-1` now wraps to `rem(abs(index), size)` instead of returning `:dead_runtime_error`.
+
 ## v0.4.0 (2026-08-16)
 
 Security and lifecycle release. Two independent reviews — an internal audit and

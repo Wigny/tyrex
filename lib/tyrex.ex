@@ -772,6 +772,7 @@ defmodule Tyrex do
   # both `:brutal_kill` and `stop/1`'s own escalation branch. `terminate/2` does
   # not run on either, so `fail_inflight/2` cannot cover them.
   defp dead_runtime_exit?({reason, {GenServer, :call, _args}}), do: dead_runtime_exit?(reason)
+  defp dead_runtime_exit?({:noproc, {PartitionSupervisor, _fun, _args}}), do: true
   defp dead_runtime_exit?(:noproc), do: true
   defp dead_runtime_exit?(:normal), do: true
   defp dead_runtime_exit?(:shutdown), do: true

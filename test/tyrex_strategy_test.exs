@@ -10,8 +10,6 @@ defmodule TyrexStrategyTest do
       assert Tyrex.Pool.Strategy.RoundRobin.select(state, []) == 1
       assert Tyrex.Pool.Strategy.RoundRobin.select(state, []) == 2
       assert Tyrex.Pool.Strategy.RoundRobin.select(state, []) == 0
-
-      assert :ok = Tyrex.Pool.Strategy.RoundRobin.terminate(state)
     end
 
     test "hits every index exactly once in size consecutive selects" do
@@ -19,8 +17,6 @@ defmodule TyrexStrategyTest do
 
       indices = for _ <- 1..4, do: Tyrex.Pool.Strategy.RoundRobin.select(state, [])
       assert indices == [0, 1, 2, 3]
-
-      Tyrex.Pool.Strategy.RoundRobin.terminate(state)
     end
 
     test "wraps back to 0 after size-1" do
@@ -28,8 +24,6 @@ defmodule TyrexStrategyTest do
 
       indices = for _ <- 1..5, do: Tyrex.Pool.Strategy.RoundRobin.select(state, [])
       assert indices == [0, 1, 2, 0, 1]
-
-      Tyrex.Pool.Strategy.RoundRobin.terminate(state)
     end
 
     test "handles single pool size" do
@@ -38,8 +32,6 @@ defmodule TyrexStrategyTest do
       for _ <- 1..5 do
         assert Tyrex.Pool.Strategy.RoundRobin.select(state, []) == 0
       end
-
-      Tyrex.Pool.Strategy.RoundRobin.terminate(state)
     end
   end
 

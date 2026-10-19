@@ -7,7 +7,7 @@ defmodule TyrexPoolTest do
     pool_sup
     |> Supervisor.which_children()
     |> Enum.find_value(fn
-      {Tyrex.Pool.RuntimeSupervisor, pid, _type, _mods} when is_pid(pid) -> pid
+      {_id, pid, :supervisor, _mods} when is_pid(pid) -> pid
       _ -> nil
     end)
   end
@@ -17,7 +17,7 @@ defmodule TyrexPoolTest do
     |> runtime_supervisor()
     |> Supervisor.which_children()
     |> Enum.filter(fn
-      {{Tyrex, _i}, _pid, _type, _mods} -> true
+      {i, _pid, _type, _mods} when is_integer(i) -> true
       _ -> false
     end)
   end
@@ -41,6 +41,30 @@ defmodule TyrexPoolTest do
       {:ok, sup} = Tyrex.Pool.start_link(name: :sized_pool, size: 3)
       runtimes = runtime_children(sup)
       assert length(runtimes) == 3
+      Supervisor.stop(sup)
+    end
+
+    test "runtime_name resolves to the runtime at each index" do
+      {:ok, sup} = Tyrex.Pool.start_link(name: :routing_pool, size: 4, permissions: :none)
+
+      for {i, pid, _type, _mods} <- runtime_children(sup) do
+        assert GenServer.whereis(Tyrex.Pool.runtime_name(:routing_pool, i)) == pid
+      end
+
+      Supervisor.stop(sup)
+    end
+
+    test "returns dead_runtime_error while the runtimes are down" do
+      {:ok, sup} = Tyrex.Pool.start_link(name: :down_pool, size: 2, permissions: :none)
+
+      :ok = Supervisor.terminate_child(sup, :"down_pool.Runtimes")
+
+      assert {:error, %Tyrex.Error{name: :dead_runtime_error}} =
+               Tyrex.Pool.eval(:down_pool, "1")
+
+      {:ok, _pid} = Supervisor.restart_child(sup, :"down_pool.Runtimes")
+      assert {:ok, 1} = Tyrex.Pool.eval(:down_pool, "1")
+
       Supervisor.stop(sup)
     end
 
@@ -255,24 +279,17 @@ defmodule TyrexPoolTest do
   end
 
   describe "pool cleanup" do
-    test "pool stop erases persistent_term and ETS state" do
+    test "pool stop erases its persistent_term state" do
       {:ok, sup} = Tyrex.Pool.start_link(name: :cleanup_pool, size: 2)
       # Ensure init has completed before sampling state.
       :sys.get_state(sup)
 
       assert %{size: 2} = :persistent_term.get({Tyrex.Pool, :cleanup_pool})
 
-      # The default RoundRobin strategy owns an ETS table named after the pool.
-      ets_names_before = :ets.all() |> Enum.map(&:ets.info(&1, :name))
-      assert :"cleanup_pool.RoundRobin" in ets_names_before
-
       Supervisor.stop(sup)
       refute Process.alive?(sup)
 
       assert :persistent_term.get({Tyrex.Pool, :cleanup_pool}, :missing) == :missing
-
-      ets_names_after = :ets.all() |> Enum.map(&:ets.info(&1, :name))
-      refute :"cleanup_pool.RoundRobin" in ets_names_after
     end
 
     test "repeated start/stop cycles do not leak persistent_term entries" do
@@ -307,26 +324,26 @@ defmodule TyrexPoolTest do
     @tag timeout: 120_000
     test "a deadline on one runtime leaves its siblings untouched" do
       {:ok, sup} = Tyrex.Pool.start_link(name: :blast_pool, size: 4, permissions: :none)
-      names = for i <- 0..3, do: :"blast_pool.Runtime.#{i}"
-      before = Map.new(names, fn n -> {n, Process.whereis(n)} end)
+      names = for i <- 0..3, do: Tyrex.Pool.runtime_name(:blast_pool, i)
+      before = Map.new(names, fn n -> {n, GenServer.whereis(n)} end)
       assert Enum.all?(before, fn {_n, pid} -> is_pid(pid) end)
 
-      victim = before[:"blast_pool.Runtime.0"]
+      victim = before[hd(names)]
       ref = Process.monitor(victim)
       spawn(fn -> Tyrex.eval("for(;;){}", pid: victim, timeout: 300) end)
       assert_receive {:DOWN, ^ref, :process, ^victim, {:shutdown, :timeout}}, 5_000
 
       # Let the supervisor replace it.
-      assert eventually(fn -> is_pid(Process.whereis(:"blast_pool.Runtime.0")) end)
+      assert eventually(fn -> GenServer.whereis(hd(names)) not in [nil, victim] end)
 
       # The victim was replaced...
-      refute Process.whereis(:"blast_pool.Runtime.0") == victim
+      refute GenServer.whereis(hd(names)) == victim
 
       # ...and nothing else moved. This is the assertion: under `:rest_for_one`
       # all three siblings had a new pid here.
       for n <- tl(names) do
-        assert Process.whereis(n) == before[n],
-               "#{n} was restarted by an unrelated runtime's deadline"
+        assert GenServer.whereis(n) == before[n],
+               "#{inspect(n)} was restarted by an unrelated runtime's deadline"
 
         assert Process.alive?(before[n])
       end
@@ -341,7 +358,7 @@ defmodule TyrexPoolTest do
       # Six is comfortably past the default intensity of 3-in-5s that killed the
       # supervisor before the runtimes were rescoped.
       for _ <- 1..6 do
-        victim = Process.whereis(:"storm_pool.Runtime.0")
+        victim = GenServer.whereis(Tyrex.Pool.runtime_name(:storm_pool, 0))
 
         if is_pid(victim) do
           ref = Process.monitor(victim)

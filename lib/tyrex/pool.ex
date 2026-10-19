@@ -25,10 +25,10 @@ defmodule Tyrex.Pool do
 
   ## Lifecycle
 
-  The pool registers its metadata in `:persistent_term` and may own ETS tables
-  via its strategy. Both are cleaned up automatically when the supervisor is
-  stopped — `Tyrex.Pool` is safe to start and stop dynamically (e.g. one pool
-  per tenant) without leaking persistent_term or ETS resources.
+  The pool registers its metadata in `:persistent_term`, and its strategy may
+  hold state of its own. Both are cleaned up automatically when the supervisor
+  is stopped — `Tyrex.Pool` is safe to start and stop dynamically (e.g. one pool
+  per tenant) without leaking persistent_term or strategy resources.
   """
 
   use Supervisor
@@ -84,21 +84,10 @@ defmodule Tyrex.Pool do
         id: Tyrex.Pool.Registry
       )
 
-    runtime_children =
-      for i <- 0..(size - 1) do
-        Supervisor.child_spec(
-          {Tyrex, Keyword.merge(runtime_opts, name: :"#{name}.Runtime.#{i}")},
-          id: {Tyrex, i}
-        )
-      end
-
     runtime_supervisor =
-      Supervisor.child_spec(
-        {Tyrex.Pool.RuntimeSupervisor,
-         [children: runtime_children, size: size] ++
-           Keyword.take(opts, [:max_restarts, :max_seconds])},
-        id: Tyrex.Pool.RuntimeSupervisor
-      )
+      {Tyrex.Pool.RuntimeSupervisor,
+       [name: runtimes_name(name), size: size, runtime_opts: runtime_opts] ++
+         Keyword.take(opts, [:max_restarts, :max_seconds])}
 
     # Registry is the FIRST child so it terminates LAST — its terminate/2 then
     # gets to erase the persistent_term entry after all runtimes have stopped.
@@ -126,7 +115,7 @@ defmodule Tyrex.Pool do
       :persistent_term.get({__MODULE__, pool_name})
 
     index = mod.select(state, opts)
-    Tyrex.eval(code, Keyword.merge(opts, name: :"#{pool_name}.Runtime.#{index}"))
+    Tyrex.eval(code, Keyword.put(opts, :name, runtime_name(pool_name, index)))
   end
 
   @doc """
@@ -139,4 +128,21 @@ defmodule Tyrex.Pool do
       {:error, %Error{} = e} -> raise e
     end
   end
+
+  @doc """
+  Returns the name of the runtime at `index` in the pool `pool_name`.
+
+  Pass it as `:name` to `Tyrex.eval/2`, or to `GenServer.whereis/1` to find the
+  runtime's pid, for example from a custom `Tyrex.Pool.Strategy`. While a
+  runtime is restarting, `GenServer.whereis/1` returns the pid of the process
+  being replaced. While the pool's runtimes are being rebuilt as a whole,
+  `GenServer.whereis/1` exits with
+  `{:noproc, {PartitionSupervisor, :partitions, [:"<pool_name>.Runtimes"]}}`.
+  """
+  @spec runtime_name(atom(), non_neg_integer()) :: GenServer.name()
+  def runtime_name(pool_name, index) do
+    {:via, PartitionSupervisor, {runtimes_name(pool_name), index}}
+  end
+
+  defp runtimes_name(pool_name), do: :"#{pool_name}.Runtimes"
 end

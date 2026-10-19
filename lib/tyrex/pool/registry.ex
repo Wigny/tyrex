@@ -1,7 +1,7 @@
 defmodule Tyrex.Pool.Registry do
   @moduledoc false
   # Internal: owns the persistent_term entry for a Tyrex.Pool and is responsible
-  # for cleaning it up — and the strategy's ETS/state — on shutdown.
+  # for cleaning it up — and the strategy's state — on shutdown.
   #
   # The Registry is started as the FIRST child of the `Tyrex.Pool` supervisor
   # with a `:rest_for_one` strategy. Because Supervisor stops children in

@@ -22,16 +22,12 @@ defmodule LeastLoaded do
   @impl true
   def select({pool_name, size}, _opts) do
     Enum.min_by(0..(size - 1), fn i ->
-      case Process.whereis(:"#{pool_name}.Runtime.#{i}") do
-        nil ->
-          # Runtime currently down — pretend it's saturated so we skip it.
-          :infinity
+      pid = GenServer.whereis(Tyrex.Pool.runtime_name(pool_name, i))
 
-        pid ->
-          case Process.info(pid, :message_queue_len) do
-            {:message_queue_len, len} -> len
-            nil -> :infinity
-          end
+      case Process.info(pid, :message_queue_len) do
+        {:message_queue_len, len} -> len
+        # Runtime currently down — pretend it's saturated so we skip it.
+        nil -> :infinity
       end
     end)
   end
@@ -51,7 +47,7 @@ size = 4
 # it's always the least-loaded when nothing's queued.
 for i <- 0..(size - 1) do
   Tyrex.eval("globalThis.runtimeId = #{i}; globalThis.calls = 0",
-    name: :"ll_pool.Runtime.#{i}"
+    name: Tyrex.Pool.runtime_name(:ll_pool, i)
   )
 end
 
@@ -110,7 +106,7 @@ end
 IO.puts("\nJS-side `globalThis.calls` per runtime:")
 
 for i <- 0..(size - 1) do
-  {:ok, calls} = Tyrex.eval("globalThis.calls", name: :"ll_pool.Runtime.#{i}")
+  {:ok, calls} = Tyrex.eval("globalThis.calls", name: Tyrex.Pool.runtime_name(:ll_pool, i))
   IO.puts("  runtime #{i}: calls=#{calls}")
 end
 

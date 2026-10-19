@@ -1,7 +1,8 @@
 defmodule Tyrex.Pool.RuntimeSupervisor do
   @moduledoc false
 
-  # The runtime children of a `Tyrex.Pool`, supervised `:one_for_one`.
+  # The runtime children of a `Tyrex.Pool`: one `PartitionSupervisor`
+  # partition per runtime, supervised `:one_for_one`.
   #
   # This layer exists because of the blast radius, not for tidiness. As of
   # v0.4.0 an eval deadline or a `:max_heap_mb` trip stops the runtime's
@@ -26,26 +27,22 @@ defmodule Tyrex.Pool.RuntimeSupervisor do
   # guest chooses the failure rate. Supervisor intensity exists to catch "this
   # child cannot start"; here a terminated runtime is ordinary operation, so the
   # default has to accommodate a pool-wide burst without treating it as a
-  # systemic fault.
-
-  use Supervisor
+  # systemic fault. `PartitionSupervisor`'s own default of 3 restarts would not.
 
   @default_max_seconds 5
 
-  @spec start_link(keyword()) :: Supervisor.on_start()
-  def start_link(opts) do
-    Supervisor.start_link(__MODULE__, opts)
-  end
-
-  @impl Supervisor
-  def init(opts) do
-    children = Keyword.fetch!(opts, :children)
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+  def child_spec(opts) do
     size = Keyword.fetch!(opts, :size)
 
-    Supervisor.init(children,
-      strategy: :one_for_one,
-      max_restarts: Keyword.get(opts, :max_restarts, max(size * 4, 12)),
-      max_seconds: Keyword.get(opts, :max_seconds, @default_max_seconds)
+    Supervisor.child_spec(
+      {PartitionSupervisor,
+       name: Keyword.fetch!(opts, :name),
+       partitions: size,
+       child_spec: {Tyrex, [name: nil] ++ Keyword.fetch!(opts, :runtime_opts)},
+       max_restarts: Keyword.get(opts, :max_restarts, max(size * 4, 12)),
+       max_seconds: Keyword.get(opts, :max_seconds, @default_max_seconds)},
+      []
     )
   end
 end
