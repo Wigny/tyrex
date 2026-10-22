@@ -74,9 +74,39 @@ defmodule Tyrex do
   alias Tyrex.Runtime
   alias Tyrex.Telemetry
 
+  @typedoc """
+  V8's own view of a runtime's heap, as `GetHeapStatistics` reports it.
+
+  Every value is a byte count, except `:number_of_native_contexts` and
+  `:number_of_detached_contexts`. `:used_heap_size` against `:heap_size_limit`
+  is what `:max_heap_mb` is enforced on; `:external_memory` covers
+  ArrayBuffers and other allocations held outside the V8 heap, which that cap
+  does not govern.
+  """
+  @type heap_statistics :: %{
+          total_heap_size: non_neg_integer(),
+          total_heap_size_executable: non_neg_integer(),
+          total_physical_size: non_neg_integer(),
+          total_available_size: non_neg_integer(),
+          used_heap_size: non_neg_integer(),
+          heap_size_limit: non_neg_integer(),
+          malloced_memory: non_neg_integer(),
+          peak_malloced_memory: non_neg_integer(),
+          external_memory: non_neg_integer(),
+          number_of_native_contexts: non_neg_integer(),
+          number_of_detached_contexts: non_neg_integer()
+        }
+
   @default_eval_timeout 5_000
   @default_startup_timeout 30_000
   @default_stop_timeout 5_000
+
+  # A heap read queues behind whatever the isolate's thread is already running,
+  # so under load it waits for the eval in front of it. Kept well below
+  # `@default_eval_timeout` on purpose: a poller that walks a pool every few
+  # seconds should give up on a busy runtime and take the next sample rather
+  # than stall for the length of a long eval.
+  @default_heap_statistics_timeout 1_000
 
   # The server-side deadline must win the race against the caller's own
   # `GenServer.call` timeout, otherwise the caller exits with `:timeout` before
@@ -535,6 +565,69 @@ defmodule Tyrex do
     end
   end
 
+  @doc """
+  Read V8's own view of this runtime's heap, in bytes.
+
+  This returns numbers and emits nothing. `Tyrex.Pool.measure_memory/2` is the
+  function to hand to `:telemetry_poller` when you want
+  `[:tyrex, :runtime, :memory]` events instead.
+
+  ## Options
+
+    * `:name` - The name of the Tyrex process. The default is `Tyrex`.
+      Can't be provided if `:pid` is provided.
+    * `:pid` - The pid of the Tyrex process. Can't be provided if `:name` is
+      provided.
+    * `:timeout` - Wall-clock deadline in milliseconds for the read. Defaults
+      to `#{@default_heap_statistics_timeout}`. On expiry
+      `{:error, %Tyrex.Error{name: :timeout}}` is returned and **the runtime
+      keeps running** — a measurement is never the reason a runtime dies. This
+      is the one deliberate difference from `eval/2`'s `:timeout`.
+
+  V8 answers `GetHeapStatistics` only on the isolate's own thread, so the read
+  queues behind whatever that thread is already running: a runtime busy with a
+  long eval answers late, and one wedged in a guest that never yields does not
+  answer at all. That is what the deadline is for, and why sampling a loaded
+  pool is expected to miss runtimes rather than block.
+
+  The read runs outside the runtime's message loop, in a throwaway process that
+  holds the NIF resource for the duration. Running it inside the runtime's own
+  `handle_call/3` would park that GenServer on a dirty-IO scheduler thread for
+  the whole read, leaving it unable to service its own eval deadline timers
+  while a poll is in flight — so a poll would silently extend every deadline it
+  overlapped.
+
+  ## Examples
+
+      iex> {:ok, pid} = Tyrex.start(permissions: :none)
+      iex> {:ok, statistics} = Tyrex.heap_statistics(pid: pid)
+      iex> statistics.used_heap_size < statistics.heap_size_limit
+      true
+  """
+  @spec heap_statistics(Keyword.t()) :: {:ok, heap_statistics()} | {:error, Error.t()}
+  def heap_statistics(opts \\ []) do
+    case validate_timeout!(Keyword.get(opts, :timeout, @default_heap_statistics_timeout)) do
+      :infinity ->
+        {:error, unsupported_option(:unbounded_read)}
+
+      timeout ->
+        GenServer.call(server(opts), {:heap_statistics, timeout}, call_timeout(timeout))
+    end
+  catch
+    :exit, reason ->
+      if dead_runtime_exit?(reason) do
+        {:error,
+         %Error{
+           name: :dead_runtime_error,
+           message:
+             "the runtime was already gone when this read was made, or died " <>
+               "before it could reply"
+         }}
+      else
+        :erlang.raise(:exit, reason, __STACKTRACE__)
+      end
+  end
+
   @impl GenServer
   def init(opts) do
     start_time = System.monotonic_time()
@@ -607,6 +700,17 @@ defmodule Tyrex do
       true ->
         blocking_eval(code, timeout, state)
     end
+  end
+
+  # Replying from a throwaway process, rather than calling the NIF here, keeps
+  # this mailbox free: the NIF parks a dirty-IO thread until the worker answers,
+  # and a parked runtime cannot service its own `{:deadline, from}` timers, so an
+  # inline read would extend every eval deadline it overlapped. Unlinked, because
+  # a failed measurement must not take the runtime with it.
+  @impl GenServer
+  def handle_call({:heap_statistics, timeout}, from, %{reference: reference} = state) do
+    spawn(fn -> GenServer.reply(from, Native.heap_statistics(reference, timeout)) end)
+    {:noreply, state}
   end
 
   # An allowlisted MFA runs INLINE here, on the runtime's own message loop, so
@@ -855,6 +959,16 @@ defmodule Tyrex do
           "life of the VM, invisible to BEAM scheduler-utilization monitoring because " <>
           "it is not a dirty scheduler; with `blocking: true` it also parks a dirty-IO " <>
           "scheduler thread permanently"
+    }
+  end
+
+  defp unsupported_option(:unbounded_read) do
+    %Error{
+      name: :unsupported_option,
+      message:
+        "a heap read requires a finite :timeout — with `timeout: :infinity` the NIF " <>
+          "parks a dirty-IO scheduler thread until the isolate answers, and a runtime " <>
+          "wedged in a guest that never yields never answers"
     }
   end
 

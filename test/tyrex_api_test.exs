@@ -227,6 +227,62 @@ defmodule TyrexApiTest do
     end
   end
 
+  describe "heap_statistics/1" do
+    test "reports V8's byte counts for an idle runtime" do
+      pid = start_supervised!({Tyrex, permissions: :none}, restart: :temporary)
+
+      assert {:ok, statistics} = Tyrex.heap_statistics(pid: pid)
+
+      assert statistics.used_heap_size > 0
+      assert statistics.used_heap_size <= statistics.total_heap_size
+      assert statistics.total_heap_size <= statistics.heap_size_limit
+      assert statistics.number_of_native_contexts > 0
+    end
+
+    test "leaves a busy runtime alive when the read hits its deadline" do
+      pid = start_supervised!({Tyrex, permissions: :none}, restart: :temporary)
+
+      busy =
+        Task.async(fn ->
+          Tyrex.eval("const until = Date.now() + 2_000; while (Date.now() < until) {} 1",
+            pid: pid,
+            timeout: 10_000
+          )
+        end)
+
+      # The worker thread is inside `execute_script` and cannot read its channel,
+      # so the read queues behind the eval and expires.
+      Process.sleep(200)
+
+      assert {:error, %Tyrex.Error{name: :timeout}} = Tyrex.heap_statistics(pid: pid, timeout: 50)
+
+      # The rule this test exists for: a measurement is never the reason a
+      # runtime dies. `eval_blocking/3` terminates the isolate on expiry; the
+      # heap read must not, or a poller would reap the very runtimes it is
+      # sampling.
+      assert Process.alive?(pid)
+      assert {:ok, 1} = Task.await(busy, 15_000)
+      assert {:ok, 3} = Tyrex.eval("1 + 2", pid: pid)
+    end
+
+    test "refuses timeout: :infinity and survives the refusal" do
+      pid = start_supervised!({Tyrex, permissions: :none}, restart: :temporary)
+
+      assert {:error, %Tyrex.Error{name: :unsupported_option, message: message}} =
+               Tyrex.heap_statistics(pid: pid, timeout: :infinity)
+
+      assert message =~ "finite :timeout"
+      assert Process.alive?(pid)
+    end
+
+    test "answers dead_runtime_error rather than exiting once the runtime is gone" do
+      pid = start_supervised!({Tyrex, permissions: :none}, restart: :temporary)
+      Tyrex.stop(pid: pid)
+
+      assert {:error, %Tyrex.Error{name: :dead_runtime_error}} = Tyrex.heap_statistics(pid: pid)
+    end
+  end
+
   describe "the missing-:permissions warning" do
     test "is emitted once per VM" do
       # The warning is one-shot per VM, so any earlier test may have consumed
