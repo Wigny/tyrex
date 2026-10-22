@@ -296,6 +296,58 @@ fn eval_blocking(
     }
 }
 
+/// Read V8's heap statistics for this runtime.
+///
+/// `DirtyIo` for the same reason as `eval_blocking`: this parks on a channel
+/// while another thread answers.
+///
+/// The read runs on the isolate's own thread, which is the only thread allowed
+/// to ask V8 for them, so it queues behind whatever that thread is already
+/// doing. A runtime busy with a long eval therefore answers late, and one
+/// wedged in a guest that never yields does not answer at all — hence the
+/// deadline. Unlike `eval_blocking`, expiry leaves the runtime alone: a
+/// measurement must never be the reason a runtime dies.
+#[rustler::nif(schedule = "DirtyIo")]
+fn heap_statistics(
+    resource: ResourceArc<runtime::Runtime>,
+    timeout_ms: u64,
+) -> Result<worker::HeapStatistics, error::Error> {
+    let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+    resource
+        .worker_sender
+        .send(worker::Message::HeapStatistics(response_sender))
+        .or(Err(error::Error {
+            message: None,
+            name: atoms::dead_runtime_error(),
+            value: None,
+        }))?;
+
+    let received = tokio_runtime::get().block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            response_receiver,
+        )
+        .await
+    });
+
+    match received {
+        Ok(Ok(statistics)) => Ok(statistics),
+        Ok(Err(_)) => Err(error::Error {
+            message: None,
+            name: atoms::dead_runtime_error(),
+            value: None,
+        }),
+        Err(_elapsed) => Err(error::Error {
+            message: Some(format!(
+                "the runtime did not report its heap statistics within {timeout_ms}ms; \
+                 its thread is busy with another evaluation"
+            )),
+            name: atoms::timeout(),
+            value: None,
+        }),
+    }
+}
+
 #[rustler::nif]
 fn apply_reply(
     resource: ResourceArc<runtime::Runtime>,

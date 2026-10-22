@@ -11,7 +11,47 @@ use tokio::sync::oneshot::Sender;
 pub enum Message {
     ApplyReply(String, Result<String, String>),
     Eval(String, Sender<Result<String, Error>>),
+    HeapStatistics(Sender<HeapStatistics>),
     Stop(Sender<()>),
+}
+
+/// V8's own view of the isolate's heap, as `GetHeapStatistics` reports it.
+///
+/// Every field is bytes, except the two context counts. `used_heap_size`
+/// against `heap_size_limit` is what a `:max_heap_mb` cap is enforced on, and
+/// `external_memory` covers ArrayBuffers and other allocations held outside the
+/// V8 heap, which the cap does not govern.
+#[derive(rustler::NifMap)]
+pub struct HeapStatistics {
+    pub total_heap_size: u64,
+    pub total_heap_size_executable: u64,
+    pub total_physical_size: u64,
+    pub total_available_size: u64,
+    pub used_heap_size: u64,
+    pub heap_size_limit: u64,
+    pub malloced_memory: u64,
+    pub peak_malloced_memory: u64,
+    pub external_memory: u64,
+    pub number_of_native_contexts: u64,
+    pub number_of_detached_contexts: u64,
+}
+
+impl From<deno_core::v8::HeapStatistics> for HeapStatistics {
+    fn from(statistics: deno_core::v8::HeapStatistics) -> Self {
+        Self {
+            total_heap_size: statistics.total_heap_size() as u64,
+            total_heap_size_executable: statistics.total_heap_size_executable() as u64,
+            total_physical_size: statistics.total_physical_size() as u64,
+            total_available_size: statistics.total_available_size() as u64,
+            used_heap_size: statistics.used_heap_size() as u64,
+            heap_size_limit: statistics.heap_size_limit() as u64,
+            malloced_memory: statistics.malloced_memory() as u64,
+            peak_malloced_memory: statistics.peak_malloced_memory() as u64,
+            external_memory: statistics.external_memory() as u64,
+            number_of_native_contexts: statistics.number_of_native_contexts() as u64,
+            number_of_detached_contexts: statistics.number_of_detached_contexts() as u64,
+        }
+    }
 }
 
 /// The runtime's slab id, kept in per-runtime `OpState`.
@@ -745,6 +785,17 @@ pub async fn run(
                         let _ = response_sender.send(());
                         drain_pending_promises(&mut promises);
                         break;
+                    },
+                    Message::HeapStatistics(response_sender) => {
+                        let statistics =
+                            HeapStatistics::from(worker.js_runtime.v8_isolate().get_heap_statistics());
+                        // A read that queued behind a long eval has usually hit
+                        // its deadline by the time this runs, and the NIF drops
+                        // the receiver on expiry — so a failed send is the
+                        // ordinary outcome of a timed-out measurement, not a
+                        // fault. Logging it put a line on stderr for every
+                        // missed poll.
+                        let _ = response_sender.send(statistics);
                     },
                     Message::ApplyReply(application_id, result) => {
                         let (kind, value) = match result {

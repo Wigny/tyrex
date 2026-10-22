@@ -66,6 +66,20 @@ defmodule Tyrex.Native do
   def eval_blocking(_reference, _code, _timeout_ms), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
+  Ask the worker for V8's heap statistics, parking the calling dirty-IO
+  scheduler thread until it answers or `timeout_ms` elapses.
+
+  V8 only answers this on the isolate's own thread, so the read queues behind
+  whatever that thread is already running. On expiry
+  `{:error, %Tyrex.Error{name: :timeout}}` is returned and the runtime is left
+  untouched — unlike `eval_blocking/3`, a measurement never terminates a
+  runtime.
+  """
+  @spec heap_statistics(reference(), non_neg_integer()) ::
+          {:ok, %{atom() => non_neg_integer()}} | {:error, Tyrex.Error.t()}
+  def heap_statistics(_reference, _timeout_ms), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
   Deliver the result of an Elixir-side `Tyrex.apply` callback back to the
   worker so the JS-side promise can be resolved or rejected. Returns
   `{:ok, {}}` on success, or `{:error, %Tyrex.Error{}}` if the worker is gone.
