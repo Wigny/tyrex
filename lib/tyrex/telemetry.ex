@@ -40,6 +40,20 @@ defmodule Tyrex.Telemetry do
   end
 
   @doc """
+  Emit `[:tyrex, :runtime, :memory]` with V8's heap statistics as the measurements.
+
+  The event is pull-based: reading the statistics costs a round trip to the isolate's own
+  thread, so nothing emits it on its own and the host drives it from its own
+  `:telemetry_poller`. The read therefore happens in the poller's process rather than the
+  runtime's, which is why the caller supplies the metadata instead of `metadata/1` deriving
+  it from `self/0`.
+  """
+  @spec runtime_memory(:telemetry.event_metadata(), :telemetry.event_measurements()) :: :ok
+  def runtime_memory(metadata, statistics) do
+    :telemetry.execute([:tyrex, :runtime, :memory], statistics, metadata)
+  end
+
+  @doc """
   Run `fun` as a `[:tyrex, :eval]` span and return its result unchanged.
 
   Wrap the whole call to the runtime, so that the span measures the wait in the runtime's

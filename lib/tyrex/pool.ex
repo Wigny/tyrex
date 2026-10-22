@@ -34,6 +34,7 @@ defmodule Tyrex.Pool do
   use Supervisor
 
   alias Tyrex.Error
+  alias Tyrex.Telemetry
 
   @doc """
   Start a pool of Tyrex runtimes.
@@ -136,6 +137,48 @@ defmodule Tyrex.Pool do
         index: index
       )
     )
+  end
+
+  @doc """
+  Read every runtime's heap and emit one `[:tyrex, :runtime, :memory]` event per
+  successful read.
+
+  This is the measurement function to hand to `:telemetry_poller`, which owns
+  the interval and the process the reads run in:
+
+      {:telemetry_poller,
+       measurements: [{Tyrex.Pool, :measure_memory, [:js_pool]}],
+       period: :timer.seconds(30),
+       name: :js_pool_poller}
+
+  The poller deliberately belongs to the host and not to Tyrex. Each read is a
+  round trip to a runtime's isolate thread, and running N of those inside a
+  pool's own processes is the hazard `db_connection` documents: the measurement
+  would then compete with the work it is measuring.
+
+  Accepts the same `:timeout` as `Tyrex.heap_statistics/1`. A runtime that does
+  not answer within it — busy with a long eval, wedged in a guest that never
+  yields, restarting — contributes no event for that sample, so the gap is
+  visible in the metric rather than hidden behind a stale or blocked read.
+  """
+  @spec measure_memory(atom(), Keyword.t()) :: :ok
+  def measure_memory(pool_name, opts \\ []) do
+    %{size: size} = :persistent_term.get({__MODULE__, pool_name})
+
+    Enum.each(0..(size - 1), fn index ->
+      name = :"#{pool_name}.Runtime.#{index}"
+
+      case Tyrex.heap_statistics(Keyword.put(opts, :name, name)) do
+        {:ok, statistics} ->
+          Telemetry.runtime_memory(
+            %{runtime: name, pool: pool_name, index: index},
+            statistics
+          )
+
+        {:error, %Error{}} ->
+          :ok
+      end
+    end)
   end
 
   @doc """

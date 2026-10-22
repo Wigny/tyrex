@@ -60,6 +60,24 @@ defmodule TyrexTelemetryTest do
     end
   end
 
+  describe "runtime memory event" do
+    test "emits one event per runtime of the pool, carrying V8's byte counts" do
+      ref = attach([[:tyrex, :runtime, :memory]])
+      start_supervised!({Tyrex.Pool, name: :telemetry_memory_pool, size: 2, permissions: :none})
+
+      assert :ok = Tyrex.Pool.measure_memory(:telemetry_memory_pool)
+
+      for index <- 0..1 do
+        assert_receive {[:tyrex, :runtime, :memory], ^ref, measurements, metadata}
+        assert %{used_heap_size: used, heap_size_limit: limit} = measurements
+        assert used > 0
+        assert used < limit
+        assert %{pool: :telemetry_memory_pool, index: ^index} = metadata
+        assert metadata.runtime == :"telemetry_memory_pool.Runtime.#{index}"
+      end
+    end
+  end
+
   describe "runtime lifecycle events" do
     test "emits a start event once the runtime is usable" do
       ref = attach([[:tyrex, :runtime, :start]])
