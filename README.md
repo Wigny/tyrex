@@ -18,6 +18,7 @@ Execute JavaScript directly from Elixir — no external processes, no shelling o
 - **Runtime pool** — Pool of Deno runtimes with pluggable dispatch strategies
 - **Blocking & async modes** — Choose between NIF-blocking (fast, <1ms) or async eval
 - **Node.js APIs** — `node:path`, `node:buffer`, `node:crypto`, etc.
+- **Telemetry** — `:telemetry` events for runtime lifetimes, evals, and V8 heap usage
 
 ## Installation
 
@@ -668,6 +669,45 @@ All runtimes load the same main module:
 {:ok, html} = Tyrex.Pool.eval(:ssr, "renderToString(#{Jason.encode!(props)})")
 ```
 
+## Telemetry
+
+Tyrex emits [`:telemetry`](https://hexdocs.pm/telemetry) events for every runtime's lifetime, every eval, and — on demand — every runtime's V8 heap. Attach to them with `:telemetry.attach/4`, or map them in `TelemetryMetrics`.
+
+Every event's metadata carries `:runtime` (the registered name, or the pid for an unnamed runtime) and, for a runtime started by `Tyrex.Pool`, the `:pool` name and the runtime's `:index` within it. Both are `nil` outside a pool.
+
+| Event | Measurements | Extra metadata |
+|-------|--------------|----------------|
+| `[:tyrex, :runtime, :start]` | `:system_time`, `:duration` — how long the runtime took to start | |
+| `[:tyrex, :runtime, :stop]` | `:duration` — the runtime's lifetime | `:reason` — the GenServer stop reason |
+| `[:tyrex, :runtime, :memory]` | V8's heap counters, in bytes: `:total_heap_size`, `:total_heap_size_executable`, `:total_physical_size`, `:total_available_size`, `:used_heap_size`, `:heap_size_limit`, `:malloced_memory`, `:peak_malloced_memory`, `:external_memory`, plus the counts `:number_of_native_contexts` and `:number_of_detached_contexts` | |
+| `[:tyrex, :eval, :start]` | `:system_time`, `:monotonic_time` | `:blocking` |
+| `[:tyrex, :eval, :stop]` | `:duration`, `:monotonic_time` | `:blocking`, `:result` — `:ok`, or the `Tyrex.Error` name of the failure |
+| `[:tyrex, :eval, :exception]` | `:duration`, `:monotonic_time` | `:blocking`, `:kind`, `:reason`, `:stacktrace` |
+
+The eval span wraps the whole call to the runtime, so `:duration` includes the time the eval waited in the runtime's mailbox behind other work, not only the time V8 spent running it.
+
+### The memory event is pull-based
+
+Reading V8's heap costs a round trip to the isolate's own thread, so nothing emits `[:tyrex, :runtime, :memory]` on its own. You own the interval and the process the reads run in — hand `Tyrex.Pool.measure_memory/1,2` to your own [`:telemetry_poller`](https://hexdocs.pm/telemetry_poller):
+
+```elixir
+# In your supervision tree, after the pool
+{:telemetry_poller,
+ measurements: [{Tyrex.Pool, :measure_memory, [:js_pool]}],
+ period: :timer.seconds(30),
+ name: :js_pool_poller}
+```
+
+The poller is deliberately yours and not Tyrex's: N isolate round trips driven from inside a pool's own processes would compete with the work being measured.
+
+`Tyrex.heap_statistics/0,1` is the same read without the event — it returns the numbers and emits nothing.
+
+### What the events do not cover
+
+- A runtime killed with `Process.exit(pid, :kill)`, a `:brutal_kill` shutdown, or a supervisor shutdown of a process that does not trap exits reports **no** `[:tyrex, :runtime, :stop]`. `terminate/2` does not run on those paths, and a runtime does not trap exits. Every guest-caused death — eval deadline, heap trip, worker panic, `Tyrex.stop/0,1` — does run it and is reported.
+- A heap read queues behind whatever the isolate's thread is already running, so a runtime busy with a long eval answers late and one wedged in a guest that never yields does not answer at all. `Tyrex.heap_statistics/0,1` then returns `{:error, %Tyrex.Error{name: :timeout}}` — and leaves the runtime running, unlike an eval deadline. `Tyrex.Pool.measure_memory/1,2` skips such a runtime, so that sample is a gap in the metric rather than a stale number.
+- Time spent inside an allowlisted `Tyrex.apply` MFA runs on the runtime's own message loop and is not covered by the eval deadline. See [the bridge section](#bidirectional-calling-elixir-from-javascript).
+
 ## Examples
 
 Run any example with `TYREX_BUILD=true mix run examples/<file>`:
@@ -694,6 +734,7 @@ Run any example with `TYREX_BUILD=true mix run examples/<file>`:
 | `Tyrex.kill/0,1` | Terminate the isolate immediately; the runtime is then dead |
 | `Tyrex.eval/1,2` | Evaluate JS, returns `{:ok, result}` or `{:error, %Tyrex.Error{}}` |
 | `Tyrex.eval!/1,2` | Same as `eval`, raises `Tyrex.Error` on error |
+| `Tyrex.heap_statistics/0,1` | Read V8's heap counters for a runtime, in bytes |
 
 ### Inline
 
@@ -712,6 +753,7 @@ Run any example with `TYREX_BUILD=true mix run examples/<file>`:
 | `Tyrex.Pool.start_link/1` | Start a pool supervisor |
 | `Tyrex.Pool.eval/2,3` | Evaluate on a pool-selected runtime |
 | `Tyrex.Pool.eval!/2,3` | Same as `eval`, raises `Tyrex.Error` on error |
+| `Tyrex.Pool.measure_memory/1,2` | Read every runtime's heap and emit `[:tyrex, :runtime, :memory]` for each |
 
 ### Runtime Options (`Tyrex.start/1`, `Tyrex.start_link/1`)
 

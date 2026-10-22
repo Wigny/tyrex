@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `:telemetry` events for runtime lifetimes and evals: `[:tyrex, :runtime,
+  :start]`, `[:tyrex, :runtime, :stop]`, and a `[:tyrex, :eval, :start | :stop
+  | :exception]` span whose `:duration` includes the wait in the runtime's
+  mailbox. Every event names the runtime, and a pooled one also carries its
+  `:pool` and `:index`. See the README for the full reference, including the
+  deaths that report no `:stop` event.
+- `Tyrex.heap_statistics/0,1`, which reads V8's heap counters for a runtime,
+  and `Tyrex.Pool.measure_memory/1,2`, which reads every runtime of a pool and
+  emits `[:tyrex, :runtime, :memory]` for each. The memory event is pull-based:
+  hand `measure_memory` to your own `:telemetry_poller` so the isolate round
+  trips run in a process you control rather than in the pool's. A read that
+  hits its deadline leaves the runtime running — unlike an eval deadline, a
+  measurement never terminates a runtime.
+
 ## v0.4.0 (2026-08-16)
 
 Security and lifecycle release. Two independent reviews — an internal audit and
